@@ -471,6 +471,13 @@
         </div>
         <div class="muted" style="margin:4px 0 8px">${esc(i.site||'未填部位')} · ${fmtTime(i.createdAt)} · 提交人：${esc(userNameById(i.builderId))}${i.note ? ' · 说明：' + esc(i.note) : ''}${i.aiFallback ? ' · <span style="color:var(--warn)">本地识别</span>' : ''}</div>
         ${i.photos && i.photos.length ? `<div class="photo-previews">${i.photos.map(p=>`<div class="ph"><img src="${p}"/></div>`).join('')}</div>` : '<div class="muted">未附照片</div>'}
+        ${(i.status === 'rectified' || i.status === 'closed') && (i.rectifyPhotos?.length || i.rectifyNote) ? `
+        <div class="rectify-box">
+          <div style="font-weight:600;color:var(--ok);margin-bottom:6px">✅ 整改反馈</div>
+          ${i.rectifyNote ? `<div style="margin-bottom:8px">📝 ${esc(i.rectifyNote)}</div>` : ''}
+          ${i.rectifyPhotos?.length ? `<div class="photo-previews">${i.rectifyPhotos.map(p=>`<div class="ph"><img src="${p}"/></div>`).join('')}</div>` : ''}
+          ${i.rectifiedAt ? `<div class="muted" style="margin-top:6px;font-size:12.5px">整改时间：${fmtTime(i.rectifiedAt)}</div>` : ''}
+        </div>` : ''}
         <div style="margin-top:10px">
           ${(i.risks||[]).map((r,ix)=>`
             <div class="risk-item ${r.uncertain?'':'suggest'}" style="${r.uncertain?'':'border-left-color:var(--ok)'}">
@@ -534,10 +541,69 @@
   window.ApprMarkRectified = (id) => {
     const i = store.getIssue(id);
     if (!i) return;
-    i.status = 'rectified';
-    i.rectifiedAt = Date.now();
-    i.history.push({ t: '已整改', by: curUser.id, at: Date.now(), content: '施工单位报告已完成整改' });
-    store.saveIssue(i); toast('已标记整改完成'); render();
+    /* 标记已整改前须上传整改后照片 + 填写整改回复说明 */
+    openModal(`
+      <h3>✅ 提交整改反馈</h3>
+      <p class="muted" style="margin:-8px 0 14px">请上传整改后的现场照片并填写整改说明，提交后方可标记为“已整改”。</p>
+      <div class="field">
+        <label>整改后现场照片 <span style="color:var(--danger)">* 必填，至少 1 张（支持 jpg/png，最多 6 张）</span></label>
+        <div class="dropzone" id="rxDropzone">
+          <div style="font-size:34px">📷</div>
+          <p style="font-weight:600">点击选择整改后照片，或拖拽到此处</p>
+          <p class="muted">上传的照片将随整改记录一并保存</p>
+          <input type="file" id="rxFileInput" accept="image/*" multiple style="display:none" />
+        </div>
+        <div class="photo-previews" id="rxPhotos"></div>
+      </div>
+      <div class="field">
+        <label>整改回复 / 整改说明 <span style="color:var(--danger)">* 必填</span></label>
+        <textarea class="input" id="rxNote" rows="3" placeholder="请说明已完成的具体整改措施，如：已拆除临边防护缺失处并增设围挡等"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-success" id="rxSubmit">✅ 提交并标记已整改</button>
+        <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+      </div>`);
+
+    let rectPhotos = [];
+    const dropzone = document.getElementById('rxDropzone');
+    const fileInput = document.getElementById('rxFileInput');
+    const previews = document.getElementById('rxPhotos');
+
+    function addRectFiles(files) {
+      const arr = Array.from(files);
+      for (const f of arr) {
+        if (rectPhotos.length >= 6) { toast('最多上传6张'); break; }
+        if (!/^image\//.test(f.type)) continue;
+        const reader = new FileReader();
+        reader.onload = e => {
+          const src = e.target.result;
+          compressImage(src, img => { rectPhotos.push(img); drawRect(); });
+        };
+        reader.readAsDataURL(f);
+      }
+    }
+    function drawRect() {
+      previews.innerHTML = rectPhotos.map((p, ix) => `
+        <div class="ph"><img src="${p}" alt="整改照片${ix+1}"/><button class="del" data-i="${ix}">✕</button></div>`).join('');
+      previews.querySelectorAll('.del').forEach(b => b.onclick = () => { rectPhotos.splice(+b.dataset.i, 1); drawRect(); });
+    }
+    dropzone.onclick = () => fileInput.click();
+    fileInput.onchange = () => { addRectFiles(fileInput.files); fileInput.value = ''; };
+    dropzone.ondragover = e => { e.preventDefault(); dropzone.classList.add('dragover'); };
+    dropzone.ondragleave = () => dropzone.classList.remove('dragover');
+    dropzone.ondrop = e => { e.preventDefault(); dropzone.classList.remove('dragover'); addRectFiles(e.dataTransfer.files); };
+
+    document.getElementById('rxSubmit').onclick = () => {
+      const note = document.getElementById('rxNote').value.trim();
+      if (!rectPhotos.length) { toast('请至少上传一张整改后的现场照片'); return; }
+      if (!note) { toast('请填写整改回复/说明'); return; }
+      i.status = 'rectified';
+      i.rectifiedAt = Date.now();
+      i.rectifyPhotos = rectPhotos;
+      i.rectifyNote = note;
+      i.history.push({ t: '已整改', by: curUser.id, at: Date.now(), content: note, photos: rectPhotos });
+      store.saveIssue(i); closeModal(); toast('已标记整改完成'); render();
+    };
   };
   window.ApprCloseIssue = (id) => {
     const i = store.getIssue(id);
