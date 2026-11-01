@@ -15,6 +15,10 @@
 
   let curUser = null;
   let toastTimer = null;
+  /* 交互增强的模块级状态（置于顶部，避免启动期 render() 触发前处于 TDZ） */
+  let revealObserver = null;
+  let heroBound = null;
+  let rippleInstalled = false;
 
   /* ---------------- 启动 ---------------- */
   store.seedUsers();
@@ -30,8 +34,10 @@
     const p = n => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
-  function toast(msg) {
+  function toast(msg, type) {
     toastEl.textContent = msg;
+    toastEl.className = 'toast ' + (type === 'success' ? 'success' : type === 'error' ? 'error' : '');
+    void toastEl.offsetWidth; /* 重置动画以便连续提示 */
     toastEl.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2400);
@@ -41,11 +47,107 @@
     return u ? u.name : '未知';
   }
 
+  /* ---------------- 交互增强：渐显 / 数字滚动 / 涟漪 ---------------- */
+  function reduceMotion() { return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+
+  /* 页面渲染完成后：为 #app 下的 .reveal 元素做交错渐显（采用 IntersectionObserver，滚动进入可视区即触发） */
+  function activateReveal() {
+    if (revealObserver) revealObserver.disconnect();
+    installRipple(); /* 初始化按钮涟漪（幂等） */
+    const els = app.querySelectorAll('.reveal');
+    billowHero();
+    if (!els.length) return;
+    if (reduceMotion()) { els.forEach(el => el.classList.add('on')); return; }
+    revealObserver = new IntersectionObserver((entries) => {
+      entries.forEach(en => {
+        if (en.isIntersecting) { en.target.classList.add('on'); revealObserver.unobserve(en.target); }
+      });
+    }, { threshold: 0.1 });
+    els.forEach((el, i) => { /* 微小交错延迟 */
+      el.style.transitionDelay = Math.min(i * 45, 260) + 'ms';
+      revealObserver.observe(el);
+    });
+    /* 兜底：目标已全部在视口内时强制触发 */
+    setTimeout(() => verifyRevealed(els), 400);
+  }
+  function verifyRevealed(els) {
+    els.forEach(el => {
+      if (!el.classList.contains('on') && el.getBoundingClientRect().top < window.innerHeight * 0.9) {
+        el.classList.add('on');
+      }
+    });
+  }
+
+  /* 首页横幅涌浪气泡：周期性上浮 + 指针掠过时泛起涟漪（一次性为该横幅挂接，避免重复监听） */
+  function billowHero() {
+    const hero = app.querySelector('.hero-band');
+    if (!hero || hero === heroBound) return;
+    if (reduceMotion()) return;
+    heroBound = hero;
+    const makeBubble = (x, y, big) => {
+      const b = document.createElement('span');
+      b.style.cssText = `position:absolute;left:${x}px;top:${y}px;width:${big ? 18 : 7 + Math.random() * 6}px;height:${big ? 18 : 7 + Math.random() * 6}px;border-radius:50%;background:rgba(255,255,255,.22);pointer-events:none;z-index:0;animation:bubbleRise ${big ? 5.5 : 3.5 + Math.random() * 2}s linear forwards;`;
+      hero.appendChild(b);
+      setTimeout(() => b.remove(), 6000);
+    };
+    /* 周期性环境气泡 */
+    const ambient = setInterval(() => {
+      if (!document.body.contains(hero)) { clearInterval(ambient); heroBound = null; return; }
+      makeBubble(Math.random() * hero.offsetWidth, hero.offsetHeight + 10, false);
+    }, 1400);
+    /* 指针掠过泛起较大的气泡涟漪 */
+    const onMove = (e) => {
+      const r = hero.getBoundingClientRect();
+      if (Math.random() < .28) makeBubble(e.clientX - r.left, e.clientY - r.top, true);
+    };
+    hero.addEventListener('pointermove', onMove);
+    billowHero.clean = () => {
+      clearInterval(ambient);
+      hero.removeEventListener('pointermove', onMove);
+      heroBound = null;
+    };
+  }
+  // 页面切换时清理上一页横幅的定时器
+  billowHero.reset = () => { if (billowHero.clean) { billowHero.clean(); billowHero.clean = null; } };
+
+  /* 数字滚动动画：从 0 计数到目标值 */
+  function countUp(el, target, duration) {
+    if (reduceMotion()) { el.textContent = target; return; }
+    const start = performance.now();
+    const dur = duration || 780;
+    function step(now) {
+      const p = Math.min(1, (now - start) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(target * eased);
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  /* 按钮涟漪（事件委托到 document，一次注册全局生效） */
+  function installRipple() {
+    if (rippleInstalled) return; rippleInstalled = true;
+    document.addEventListener('pointerdown', (e) => {
+      const btn = e.target.closest('.btn');
+      if (!btn || reduceMotion()) return;
+      const r = btn.getBoundingClientRect();
+      const d = Math.max(r.width, r.height) * 1.1;
+      const span = document.createElement('span');
+      span.className = 'ripple';
+      span.style.width = span.style.height = d + 'px';
+      span.style.left = (e.clientX - r.left - d / 2) + 'px';
+      span.style.top = (e.clientY - r.top - d / 2) + 'px';
+      btn.appendChild(span);
+      setTimeout(() => span.remove(), 620);
+    });
+  }
+
   /* ---------------- 渲染框架 ---------------- */
   function render() {
+    if (billowHero.reset) billowHero.reset();
     renderNav();
     renderUserBox();
-    if (!curUser) { renderLogin(); return; }
+    if (!curUser) { renderLogin(); window.scrollTo(0, 0); activateReveal(); return; }
     const page = currentPage();
     if (page === 'home') renderHome();
     else if (page === 'upload') renderUpload();
@@ -57,6 +159,7 @@
     else if (page === 'ai') renderAI();
     else renderHome();
     window.scrollTo(0, 0);
+    activateReveal();
   }
 
   function currentPage() {
@@ -118,8 +221,9 @@
   /* ---------------- 登录 ---------------- */
   function renderLogin() {
     app.innerHTML = `
-      <div class="login-wrap">
+      <div class="login-wrap reveal">
         <div class="login-hero">
+          <div class="login-waves"><span class="wave-l"></span><span class="wave-r"></span></div>
           <h2>🌊 水利工程质量安全合规管理助手</h2>
           <p>以 AI 影像识别赋能现场安全质量隐患排查 · 湖北建投水利水电工程有限公司</p>
         </div>
@@ -191,13 +295,18 @@
       : '<div class="empty">暂无问题记录</div>';
 
     app.innerHTML = `
-      <div class="hero-band">
-        <div class="waves"></div>
+      <div class="hero-band reveal">
+        <div class="waves"><span class="wave-f"></span><span class="wave-b"></span></div>
         <h2>湖北建投水利水电工程有限公司</h2>
         <p>恪守质量安全底线 · 以智能影像识别守护每一处涉水工程建设现场</p>
+        <div class="hero-meta">
+          <span class="hero-tag">🏗️ 水利水电施工总承包 · 一级</span>
+          <span class="hero-tag">🌐 智慧水利 · 数字孪生</span>
+          <span class="hero-tag">♻️ 隐患整改闭环销号</span>
+        </div>
       </div>
 
-      <div class="card" style="margin-bottom:22px">
+      <div class="card reveal" style="margin-bottom:22px">
         <h3><span class="icon">🏢</span> 公司简介</h3>
         <div class="company-intro">
           <p><strong>湖北建投水利水电工程有限公司</strong>（简称"湖北建投水利"）<strong>成立于2023年4月</strong>，注册资本<strong>10亿元</strong>，为<strong>湖北路桥集团全资子公司</strong>，具有<strong>水利水电工程施工总承包一级</strong>、建筑工程施工总承包二级、市政公用工程施工总承包二级、机电工程施工总承包二级等多项施工总承包资质。</p>
@@ -215,34 +324,35 @@
         </div>
       </div>
 
-      <div class="card" style="margin-bottom:22px">
+      <div class="card reveal" style="margin-bottom:22px">
         <h3><span class="icon">🏗️</span> 在建项目简介</h3>
         <p class="muted">公司先后参建湖北汉江生态经济带引隆补水、鄂北地区水资源配置、武穴北灌区、辽宁建昌水毁修复及宜昌玛瑙河流域国土整治等省市重点工程，代表性项目如下：</p>
         <div class="grid cols-3" style="margin-top:14px">
-          <div class="reg-card"><strong style="color:var(--ink)">💧 汉江生态经济带引隆补水工程</strong><div class="muted" style="margin-top:6px">设计采购施工总承包（EPC），总投资22.37亿元</div></div>
-          <div class="reg-card"><strong style="color:var(--ink)">🛡️ 鄂北地区水资源配置二期工程熊河干线</strong><div class="muted" style="margin-top:6px">设计采购施工总承包（EPC），总投资14.92亿元</div></div>
-          <div class="reg-card"><strong style="color:var(--ink)">🏞️ 武穴北灌区新建扩建工程</strong><div class="muted" style="margin-top:6px">设计采购施工总承包（EPC），总投资20.2亿元</div></div>
-          <div class="reg-card"><strong style="color:var(--ink)">🛠️ 辽宁建昌县云山洞河等水毁修复工程</strong><div class="muted" style="margin-top:6px">浆砌石挡墙护坡与固滨笼护岸修复</div></div>
-          <div class="reg-card"><strong style="color:var(--ink)">🌾 宜昌市玛瑙河流域全域国土综合整治工程</strong><div class="muted" style="margin-top:6px">国土综合整治、水系治理与生态修复</div></div>
-          <div class="reg-card"><strong style="color:var(--ink)">⚙️ 孝感市老观湖泵站新建工程</strong><div class="muted" style="margin-top:6px">泵站新建、机电安装与配套渠系</div></div>
-          <div class="reg-card"><strong style="color:var(--ink)">💧 华容区杨巷中型灌区续建配套与节水改造工程</strong><div class="muted" style="margin-top:6px">设计施工采购总承包（EPC）项目</div></div>
-          <div class="reg-card"><strong style="color:var(--ink)">🔄 汉川市龚家湾泵站更新改造工程</strong><div class="muted" style="margin-top:6px">泵站更新改造、设备更换与调试</div></div>
-          <div class="reg-card"><strong style="color:var(--ink)">💧 房县城区水环境综合治理（二期）PPP项目</strong><div class="muted" style="margin-top:6px">管网改造、污水处理厂与智慧水务，总投资13.96亿元</div></div>
-          <div class="reg-card"><strong style="color:var(--ink)">🌾 监利市高标准农田建设项目</strong><div class="muted" style="margin-top:6px">高标准农田建设、灌排体系配套</div></div>
+          <div class="project-card"><div class="p-ico">💧</div><strong style="color:var(--ink)">汉江生态经济带引隆补水工程</strong><div class="muted" style="margin-top:6px">设计采购施工总承包（EPC），总投资22.37亿元</div></div>
+          <div class="project-card"><div class="p-ico">🛡️</div><strong style="color:var(--ink)">鄂北地区水资源配置二期工程熊河干线</strong><div class="muted" style="margin-top:6px">设计采购施工总承包（EPC），总投资14.92亿元</div></div>
+          <div class="project-card"><div class="p-ico">🏞️</div><strong style="color:var(--ink)">武穴北灌区新建扩建工程</strong><div class="muted" style="margin-top:6px">设计采购施工总承包（EPC），总投资20.2亿元</div></div>
+          <div class="project-card"><div class="p-ico">🛠️</div><strong style="color:var(--ink)">辽宁建昌县云山洞河等水毁修复工程</strong><div class="muted" style="margin-top:6px">浆砌石挡墙护坡与固滨笼护岸修复</div></div>
+          <div class="project-card"><div class="p-ico">🌾</div><strong style="color:var(--ink)">宜昌市玛瑙河流域全域国土综合整治工程</strong><div class="muted" style="margin-top:6px">国土综合整治、水系治理与生态修复</div></div>
+          <div class="project-card"><div class="p-ico">⚙️</div><strong style="color:var(--ink)">孝感市老观湖泵站新建工程</strong><div class="muted" style="margin-top:6px">泵站新建、机电安装与配套渠系</div></div>
+          <div class="project-card"><div class="p-ico">💧</div><strong style="color:var(--ink)">华容区杨巷中型灌区续建配套与节水改造工程</strong><div class="muted" style="margin-top:6px">设计施工采购总承包（EPC）项目</div></div>
+          <div class="project-card"><div class="p-ico">🔄</div><strong style="color:var(--ink)">汉川市龚家湾泵站更新改造工程</strong><div class="muted" style="margin-top:6px">泵站更新改造、设备更换与调试</div></div>
+          <div class="project-card"><div class="p-ico">💧</div><strong style="color:var(--ink)">房县城区水环境综合治理（二期）PPP项目</strong><div class="muted" style="margin-top:6px">管网改造、污水处理厂与智慧水务，总投资13.96亿元</div></div>
+          <div class="project-card"><div class="p-ico">🌾</div><strong style="color:var(--ink)">监利市高标准农田建设项目</strong><div class="muted" style="margin-top:6px">高标准农田建设、灌排体系配套</div></div>
         </div>
       </div>
 
-      <div class="stat-grid">
-        <div class="stat-card"><div class="num">${s.total}</div><div class="label">问题总数</div></div>
-        <div class="stat-card"><div class="num">${s.pending}</div><div class="label">待审核</div></div>
-        <div class="stat-card"><div class="num">${s.confirmed}</div><div class="label">确认/整改中</div></div>
-        <div class="stat-card"><div class="num">${s.rectified}</div><div class="label">已整改销号</div></div>
-        <div class="stat-card"><div class="num" style="color:var(--danger)">${s.high}</div><div class="label">高风险项</div></div>
+      <div class="stat-grid reveal">
+        <div class="stat-card"><div class="num"><span class="count-num" data-num="${s.total}">0</span></div><div class="label">问题总数</div></div>
+        <div class="stat-card"><div class="num"><span class="count-num" data-num="${s.pending}">0</span></div><div class="label">待审核</div></div>
+        <div class="stat-card"><div class="num"><span class="count-num" data-num="${s.confirmed}">0</span></div><div class="label">确认/整改中</div></div>
+        <div class="stat-card"><div class="num"><span class="count-num" data-num="${s.rectified}">0</span></div><div class="label">已整改销号</div></div>
+        <div class="stat-card high-risk"><div class="num"><span class="count-num" data-num="${s.high}">0</span></div><div class="label">高风险项</div></div>
       </div>
 
       <div class="section-title">📋 问题及整改情况预览 <span class="muted" style="font-size:13px;font-weight:400">（点击卡片跳转整改台账）</span></div>
       <div class="grid cols-2" id="previewGrid">${listHtml}</div>`;
     renderMiniBars();
+    runCountUps();
   }
   function goLedger(id) {
     sessionStorage.setItem('wm_page', 'ledger');
@@ -250,32 +360,54 @@
     render();
   }
 
-  /* 首页简易图表（用 div 做横条） */
+  /* 首页整改闭合情况（圆环 + 进度条 + 数字滚动） */
   function renderMiniBars() {
     const issues = store.listIssues();
     const total = issues.length || 1;
-    const before = issues.filter(i => i.status === 'pending' || i.status === 'confirmed').length;
     const done = issues.filter(i => i.status === 'rectified' || i.status === 'closed').length;
+    const before = total - done; /* 未完成：待审核 / 已确认 / 整改中 */
     const pct = (done / total * 100).toFixed(1);
+
     app.insertAdjacentHTML('beforeend', `
-      <div class="card" style="margin-top:22px">
+      <div class="card reveal" style="margin-top:22px" id="closureCard">
         <h3><span class="icon">📊</span> 整改闭合情况</h3>
-        <div style="height:18px;border-radius:999px;background:var(--water-100);overflow:hidden;margin:6px 0 10px">
-          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--ok),#3fd0a0);border-radius:999px"></div>
+        <div class="closure-wrap">
+          <div class="ring" id="closureRing" style="--val:0">
+            <div>
+              <div class="ring-num"><span class="count-num" data-num="${Number(pct)}">0</span>%</div>
+            </div>
+          </div>
+          <div class="closure-legends">
+            <div class="lg-item"><span class="dot" style="background:var(--ok)"></span>已完成并销号：
+              <strong style="color:var(--ok)"><span class="count-num" data-num="${done}">0</span> 项</strong></div>
+            <div class="lg-item"><span class="dot" style="background:var(--warn)"></span>办理中（待办/整改中）：
+              <strong style="color:var(--warn)"><span class="count-num" data-num="${before}">0</span> 项</strong></div>
+            <div class="lg-item"><span class="dot" style="background:var(--water-400)"></span>问题总数：
+              <strong style="color:var(--water-700)"><span class="count-num" data-num="${total}">0</span> 项</strong></div>
+            <div class="lg-item"><span class="link" onclick="go('ledger')" style="cursor:pointer">进入整改台账 →</span></div>
+          </div>
         </div>
-        <div style="display:flex;gap:24px;font-size:13.5px;flex-wrap:wrap">
-          <span>已完成并销号：<strong style="color:var(--ok)">${done}</strong> 项（${pct}%）</span>
-          <span>办理中：<strong style="color:var(--warn)">${before}</strong> 项</span>
-          <span class="link" onclick="go('ledger')">进入整改台账 →</span>
-        </div>
+        <div class="closure-bar" style="margin-top:18px"><i id="closureFill"></i></div>
       </div>`);
+    /* 触发圆环与进度条动画 */
+    requestAnimationFrame(() => {
+      const ring = document.getElementById('closureRing');
+      const fill = document.getElementById('closureFill');
+      if (ring && !reduceMotion()) ring.style.setProperty('--val', Number(pct));
+      if (fill) fill.style.width = pct + '%';
+    });
+  }
+
+  /* 页面渲染后触发统计数字滚动 */
+  function runCountUps() {
+    app.querySelectorAll('.count-num').forEach(n => countUp(n, +n.dataset.num, 900));
   }
 
   /* ---------------- 上传隐患（施工员） ---------------- */
   function renderUpload() {
     app.innerHTML = `
       <div class="section-title">📸 上传施工现场照片，AI 智能识别隐患</div>
-      <div class="card">
+      <div class="card reveal">
         <h3><span class="icon">🧠</span> AI 影像识别</h3>
         <p class="muted">上传现场照片后，系统将调用 <strong>DeepSeek 多模态模型</strong>（deepseek-flash），依据水利工程安全、质量技术规范自动识别隐患并生成整改意见。AI 不确定的项会提示<strong style="color:var(--warn)">“需现场核实”</strong>，请施工员实地确认。</p>
 
@@ -349,7 +481,11 @@
       if (!title) { toast('请填写隐患标题'); return; }
       if (!photos.length) { toast('请至少上传一张图片'); return; }
       btn.disabled = true;
-      resultEl.innerHTML = `<div class="ai-result"><span class="loader"></span> AI 正在识别照片中的安全隐患，通常需要十几秒至一分钟，请耐心等待……</div>`;
+      resultEl.innerHTML = `<div class="ai-result analyzing-mask">
+        <span class="loader"></span>
+        <div style="margin:10px 0 0">AI 正在识别照片中的安全隐患，通常需要十几秒至一分钟，请耐心等待……</div>
+        <div class="scan-bar"></div>
+      </div>`;
       try {
         const aiResult = await AI.analyze(photos, note);
         renderAIResult(resultEl, { title, site, note, aiResult, photos });
@@ -461,7 +597,7 @@
   function issueCard(mode, i) {
     const s = STATUS_META[i.status];
     return `
-      <div class="card" style="margin-bottom:16px" id="issue_${i.id}">
+      <div class="card reveal" style="margin-bottom:16px" id="issue_${i.id}">
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
           <strong style="color:var(--ink);font-size:16px">${esc(i.title)}</strong>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -681,7 +817,7 @@
     const users = store.listUsers();
     app.innerHTML = `
       <div class="section-title">👥 用户与权限管理 <span class="muted" style="font-size:13px">管理员可为用户赋予管理员/审核员/施工员身份</span></div>
-      <div class="card" style="margin-bottom:18px">
+      <div class="card reveal" style="margin-bottom:18px">
         <h3><span class="icon">➕</span> 新增用户</h3>
         <div class="field" style="display:inline-block;vertical-align:top;margin-right:10px;width:200px"><label>账号</label><input class="input" id="nuUser"/></div>
         <div class="field" style="display:inline-block;vertical-align:top;margin-right:10px;width:200px"><label>姓名</label><input class="input" id="nuName"/></div>
@@ -690,7 +826,7 @@
           <select class="input" id="nuRole"><option value="builder">施工员</option><option value="auditor">审核员</option><option value="admin">管理员</option></select></div>
         <div><button class="btn btn-primary" id="nuAdd">创建用户</button></div>
       </div>
-      <div class="card">
+      <div class="card reveal">
         <div class="table-wrap"><table>
           <thead><tr><th>姓名</th><th>账号</th><th width="90">身份</th><th width="170">调整身份</th><th width="120">操作</th></tr></thead>
           <tbody>
@@ -857,7 +993,7 @@
       <div class="section-title">🤖 AI 质量安全助手
         <span class="muted" style="font-size:13px">DeepSeek 驱动 · 支持多轮追问 · 自动联网检索规范 · 回答基于真实台账数据</span>
       </div>
-      <div class="card" style="display:flex;flex-direction:column;min-height:580px">
+      <div class="card reveal" style="display:flex;flex-direction:column;min-height:580px">
         <div class="chat-quick">
           ${quickBtns.map(([label, q]) =>
             `<button class="btn btn-secondary btn-sm" onclick="QuickAsk('${q.replace(/'/g, "\\'")}')">${label}</button>`).join('')}
@@ -1012,7 +1148,7 @@
       <button class="btn btn-sm ${c === cat ? 'btn-primary' : 'btn-ghost'}" style="margin:0 6px 6px 0"
         onclick="RegFilter('${c}')">${esc(c)}</button>`).join('');
     const cards = list.map(r => `
-      <div class="reg-card">
+      <div class="reg-card reveal">
         <div class="reg-name">📘 <a href="${r.link}" target="_blank" rel="noopener">${esc(r.name)}</a>
           <span class="badge low" style="margin-left:6px">${esc(r.category || '')}</span></div>
         <div class="reg-desc">来源：${esc(r.src || '—')} · 点击下方按钮跳转到权威平台在线查询该规范。</div>
@@ -1023,12 +1159,17 @@
       </div>`).join('');
     app.innerHTML = `
       <div class="section-title">📖 水利工程规范查询 <span class="muted" style="font-size:13px">共 ${REGULATIONS.length} 部 · 点击即跳转权威来源查询</span></div>
-      <div class="card" style="margin-bottom:18px">
+      <div class="card reveal" style="margin-bottom:18px">
         <div class="field" style="margin:0"><input class="input" id="regKw" placeholder="输入规范名称 / 编号关键字过滤，如：质量 / 安全 / 施工 / SL176" value="${esc(sessionStorage.getItem('wm_reg_kw') || '')}"/></div>
         <div class="tag-row">${chips}</div>
         <div class="muted" style="margin-top:8px">数据来源：全国标准信息公共服务平台（含水利部归口行业标准 SL）、国家法律法规数据库、住建部等行业/国标权威渠道。点击「在线查询」将打开对应权威平台的检索结果页。</div>
       </div>
-      <div class="grid cols-3">${cards || '<div class="empty">无匹配结果</div>'}</div>`;
+      <div class="grid cols-3">${cards || `
+        <div class="empty" style="grid-column:1/-1;display:flex;flex-direction:column;align-items:center;gap:12px">
+          <div style="font-size:34px">🔍</div>
+          <div style="color:var(--muted);font-size:14px">没有匹配“${esc(sessionStorage.getItem('wm_reg_kw') || '')}”的规范，换个关键词试试</div>
+          <button class="btn btn-primary btn-sm" onclick="RegFilter('全部');sessionStorage.setItem('wm_reg_kw','');renderRegs()">清空筛选</button>
+        </div>`}</div>`;
     document.getElementById('regKw').addEventListener('input', e => {
       sessionStorage.setItem('wm_reg_kw', e.target.value);
       renderRegs();
@@ -1045,7 +1186,7 @@
     const d = AI.defaultConfig;
     app.innerHTML = `
       <div class="section-title">🤖 AI 接口设置 <span class="muted" style="font-size:13px">管理员配置 DeepSeek 多模态识别接口与密钥</span></div>
-      <div class="card" style="max-width:640px">
+      <div class="card reveal" style="max-width:640px">
         <h3><span class="icon">🔌</span> 接口参数（DeepSeek 多模态）</h3>
         <div class="field"><label>接口地址 BaseURL（OpenAI 兼容，自动追加 /chat/completions）</label>
           <input class="input" id="aiBase" value="${esc(c.baseUrl)}" placeholder="${esc(d.baseUrl)}"/></div>
@@ -1114,8 +1255,13 @@
   function openModal(html) {
     modalBox.innerHTML = html;
     modalMask.style.display = 'flex';
+    void modalMask.offsetWidth; /* 触发过渡 */
+    modalMask.classList.add('show');
   }
-  window.closeModal = () => { modalMask.style.display = 'none'; modalBox.innerHTML = ''; };
+  window.closeModal = () => {
+    modalMask.classList.remove('show');
+    setTimeout(() => { modalMask.style.display = 'none'; modalBox.innerHTML = ''; }, 180);
+  };
   modalMask.addEventListener('click', e => { if (e.target === modalMask) closeModal(); });
 
   function openConfirm(msg, cb) {
@@ -1132,5 +1278,6 @@
   /* 供内联事件处理器使用的全局入口 */
   window.go = go;
   window.goLedger = goLedger;
+  window.renderRegs = renderRegs;
   window.Store = store;
 })();
